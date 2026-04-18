@@ -1,10 +1,10 @@
 import { NextRequest } from "next/server";
 import { getUserMeLoader } from "@/data/services/get-user-me-loader";
 import { getAuthToken } from "@/data/services/get-token";
-
-import { ChatOpenAI } from "@langchain/openai";
+import { ChatGroq } from "@langchain/groq";
 import { PromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
+import { YoutubeTranscript } from "youtube-transcript";
 
 const TEMPLATE = `
 INSTRUCTIONS: 
@@ -21,33 +21,18 @@ INSTRUCTIONS:
   Return possible and best recommended key words
 `;
 
-async function generateSummary(content: string, template: string) {
+async function generateSummary(content: string, template: string): Promise<string> {
   const prompt = PromptTemplate.fromTemplate(template);
-
-  const model = new ChatOpenAI({
-    openAIApiKey: process.env.OPENAI_API_KEY,
-    modelName: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
-    temperature: process.env.OPENAI_TEMPERATURE
-      ? parseFloat(process.env.OPENAI_TEMPERATURE)
-      : 0.7,
-    maxTokens: process.env.OPENAI_MAX_TOKENS
-      ? parseInt(process.env.OPENAI_MAX_TOKENS)
-      : 4000,
+  const model = new ChatGroq({
+    apiKey: process.env.GROQ_API_KEY,
+    model: "llama-3.3-70b-versatile",
+    temperature: 0.7,
   });
 
   const outputParser = new StringOutputParser();
   const chain = prompt.pipe(model).pipe(outputParser);
 
-  try {
-    const summary = await chain.invoke({ text: content });
-    return summary;
-  } catch (error) {
-    if (error instanceof Error)
-      return new Response(JSON.stringify({ error: error.message }));
-    return new Response(
-      JSON.stringify({ error: "Failed to generate summary." })
-    );
-  }
+  return await chain.invoke({ text: content });
 }
 
 export async function POST(req: NextRequest) {
@@ -56,46 +41,55 @@ export async function POST(req: NextRequest) {
 
   if (!user.ok || !token) {
     return new Response(
-      JSON.stringify({ data: null, error: "Not authenticated" }),
-      { status: 401 }
+        JSON.stringify({ data: null, error: "Not authenticated" }),
+        { status: 401 }
     );
   }
 
   if (user.data.credits < 1) {
     return new Response(
-      JSON.stringify({
-        data: null,
-        error: "Insufficient credits",
-      }),
-      { status: 402 }
+        JSON.stringify({ data: null, error: "Insufficient credits" }),
+        { status: 402 }
     );
   }
 
   const body = await req.json();
   const videoId = body.videoId;
-  const url = `https://deserving-harmony-9f5ca04daf.strapiapp.com/utilai/yt-transcript/${videoId}`;
 
-  let transcriptData;
-
-  try {
-    const transcript = await fetch(url);
-    transcriptData = await transcript.text();
-  } catch (error) {
-    console.error("Error processing request:", error);
-    if (error instanceof Error)
-      return new Response(JSON.stringify({ error: error.message }));
-    return new Response(JSON.stringify({ error: "Unknown error" }));
+  if (!videoId) {
+    return new Response(
+        JSON.stringify({ data: null, error: "videoId is required" }),
+        { status: 400 }
+    );
   }
 
-  let summary: Awaited<ReturnType<typeof generateSummary>>;
+  let transcriptData: string;
+  try {
+    const transcriptArr = await YoutubeTranscript.fetchTranscript(videoId);
+    if (!transcriptArr || transcriptArr.length === 0) {
+      return new Response(
+          JSON.stringify({ data: null, error: "Транскрипт порожній або недоступний для цього відео" }),
+          { status: 404 }
+      );
+    }
+    transcriptData = transcriptArr.map((t) => t.text).join(" ");
+    console.log("TRANSCRIPT:", transcriptData.slice(0, 500));
+  } catch (error) {
+    console.error("Transcript error:", error);
+    return new Response(
+        JSON.stringify({ data: null, error: "Не вдалося отримати транскрипт. Перевір чи відео має субтитри." }),
+        { status: 404 }
+    );
+  }
 
   try {
-    summary = await generateSummary(transcriptData, TEMPLATE);
+    const summary = await generateSummary(transcriptData, TEMPLATE);
     return new Response(JSON.stringify({ data: summary, error: null }));
   } catch (error) {
-    console.error("Error processing request:", error);
-    if (error instanceof Error)
-      return new Response(JSON.stringify({ error: error.message }));
-    return new Response(JSON.stringify({ error: "Error generating summary." }));
+    console.error("Summary error:", error);
+    return new Response(
+        JSON.stringify({ data: null, error: "Помилка генерації саммері" }),
+        { status: 500 }
+    );
   }
 }
