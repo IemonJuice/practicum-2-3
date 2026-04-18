@@ -4,7 +4,6 @@ import { getAuthToken } from "@/data/services/get-token";
 import { ChatGroq } from "@langchain/groq";
 import { PromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
-import { YoutubeTranscript } from "youtube-transcript";
 
 const TEMPLATE = `
 INSTRUCTIONS: 
@@ -65,19 +64,30 @@ export async function POST(req: NextRequest) {
 
   let transcriptData: string;
   try {
-    const transcriptArr = await YoutubeTranscript.fetchTranscript(videoId);
-    if (!transcriptArr || transcriptArr.length === 0) {
+    const response = await fetch(
+        `https://api.supadata.ai/v1/youtube/transcript?videoId=${videoId}&text=true`,
+        {
+          headers: {
+            "x-api-key": process.env.SUPADATA_API_KEY!,
+          },
+        }
+    );
+
+    const data = await response.json();
+
+    if (!data.content) {
       return new Response(
-          JSON.stringify({ data: null, error: "Транскрипт порожній або недоступний для цього відео" }),
+          JSON.stringify({ data: null, error: "Транскрипт недоступний для цього відео" }),
           { status: 404 }
       );
     }
-    transcriptData = transcriptArr.map((t) => t.text).join(" ");
+
+    transcriptData = data.content;
     console.log("TRANSCRIPT:", transcriptData.slice(0, 500));
   } catch (error) {
     console.error("Transcript error:", error);
     return new Response(
-        JSON.stringify({ data: null, error: "Не вдалося отримати транскрипт. Перевір чи відео має субтитри." }),
+        JSON.stringify({ data: null, error: "Не вдалося отримати транскрипт" }),
         { status: 404 }
     );
   }
